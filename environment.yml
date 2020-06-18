@@ -1,0 +1,19 @@
+name: roi-tomo
+channels:
+  - astra-toolbox/label/dev
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.7
+  - astra-toolbox
+  - tomopy
+  - numpy
+  - scipy
+  - scikit-image
+  - jupyter
+  - jupytext
+  - numba
+  - cupy
+  - pip
+  - bokeh
+  - matplotlib
