@@ -1,155 +1,41 @@
-# %%
-
-% matplotlib
-inline
+# %%*- coding: utf-8 -*-
+#% matplotlib inline
 
 # %%
-
-import os
-import glob
-
-import numpy as np
-import pylab as plt
-
-import astra
-import tomopy
-# import cv2
-from pprint import pprint
-import h5py
-# import ipyvolume
-import astra
-from tqdm import tqdm_notebook
-
-import matplotlib
-
-matplotlib.rcParams.update({'font.size': 22})
-
-
-# %%
-
-def build_reconstruction_geomety(detector_size, angles):
-    proj_geom = astra.create_proj_geom('parallel', 1.0, detector_size, angles)
-    return proj_geom
-
-
-def astra_tomo2d(sinogram, angles):
-    angles = angles.astype('float64')  # hack for astra stability, may be removed in future releases
-    detector_size = sinogram.shape[1]
-
-    rec_size = detector_size  # size of reconstruction region
-    vol_geom = astra.create_vol_geom(rec_size, rec_size)
-
-    proj_geom = build_reconstruction_geomety(detector_size, angles)
-
-    sinogram_id = astra.data2d.create('-sino', proj_geom, data=sinogram)
-    # Create a data object for the reconstruction
-    rec_id = astra.data2d.create('-vol', vol_geom)
-
-    # Set up the parameters for a reconstruction algorithm using the GPU
-    cfg = astra.astra_dict('FBP_CUDA')
-
-    cfg['ReconstructionDataId'] = rec_id
-    cfg['ProjectionDataId'] = sinogram_id
-    cfg['option'] = {}
-    #     cfg['option']['ShortScan'] = True
-    #     cfg['option']['MinConstraint'] = 0
-    #     cfg['option']['MaxConstraint'] = 0.02
-
-    # Available algorithms:
-    # SIRT_CUDA, SART_CUDA, EM_CUDA, FBP_CUDA (see the FBP sample)
-
-    # Create the algorithm object from the configuration structure
-    alg_id = astra.algorithm.create(cfg)
-
-    # Run 150 iterations of the algorithm
-    astra.algorithm.run(alg_id, 30)
-    # Get the result
-    rec = astra.data2d.get(rec_id)
-
-    # Clean up. Note that GPU memory is tied up in the algorithm object,
-    # and main RAM in the data objects.
-    astra.algorithm.delete(alg_id)
-    astra.data2d.delete(rec_id)
-    astra.data2d.delete(sinogram_id)
-    astra.clear()
-    return rec, proj_geom, cfg
-
-
-def astra_build_sinogram(rec, angles):
-    angles = angles.astype('float64')  # hack for astra stability, may be removed in future releases
-    detector_size = rec.shape[1]
-
-    rec_size = detector_size  # size of reconstruction region
-    vol_geom = astra.create_vol_geom(rec_size, rec_size)
-
-    proj_geom = build_reconstruction_geomety(detector_size, angles)
-
-    proj_id = astra.create_projector('cuda', proj_geom, vol_geom)
-    sinogram_id, sinogram = astra.create_sino(rec, proj_id)
-
-    astra.data2d.delete(sinogram_id)
-    astra.clear()
-    return sinogram
-
-
-# %%
-
 from tomopy.misc.phantom import shepp2d, shepp3d
+import matplotlib
+import numpy as np
+import h5py
+import pylab as plt
+from tqdm import tqdm
+from tomo.recon.astra_utils import astra_recon_2d_parallel, astra_fp_2d_parallel
+from cv2 import medianBlur
 
+matplotlib.rcParams.update({'font.size': 16})
 # %%
-
-data3 = np.squeeze(shepp3d(128)).astype('float32')
-data3 /= data3.max()
-
-# %%
-
-# ipyvolume.figure()
-# ipyvolume.volshow(data3)
-# ipyvolume.show()
-
-# %%
-
-data = np.squeeze(shepp2d(128)).astype('float32')
+data = np.squeeze(shepp2d(256)).astype('float32')
 data /= data.max()
+data = np.pad(data, data.shape[0]//4, mode='constant')
+angles = np.arange(0, 180, 1)
+
+sinogram = astra_fp_2d_parallel(data, angles)
+rec = astra_recon_2d_parallel(sinogram, angles)
 
 # %%
-
-data.shape
-
-# %%
-
-plt.figure(figsize=(10, 10))
-plt.imshow(data, cmap=plt.cm.gray, interpolation='nearest')
-# plt.colorbar(orientation='horizontal')
-plt.show()
-
-# %%
-
-angles = np.arange(0, 180, 1. / 4) * np.pi / 180
-
-# %%
-
-sinogram = astra_build_sinogram(data, angles)
-
-# %%
-
-plt.figure(figsize=(10, 10))
-plt.imshow(sinogram, cmap=plt.cm.gray, interpolation='nearest')
-# plt.colorbar(orientation='horizontal')
+plt.figure(figsize=(12, 12))
+plt.subplot(221)
+plt.imshow(data, cmap=plt.cm.gray)
+plt.subplot(222)
+plt.imshow(sinogram, cmap=plt.cm.gray)
 plt.axis('tight')
-plt.show()
-
-rec, proj_geom, cfg = astra_tomo2d(sinogram, angles)
-
-plt.figure(figsize=(10, 10))
-# plt.imshow(rec,vmin=0.1, vmax=0.2)
-plt.imshow(rec, interpolation='nearest', cmap=plt.cm.gray)
-# plt.colorbar(orientation='horizontal')
+plt.subplot(223)
+plt.imshow(rec, cmap=plt.cm.gray)
+plt.subplot(224)
+plt.imshow(data-rec, cmap=plt.cm.seismic)
 plt.show()
 
 
 # %%
-
 def get_x_cut(data):
     return np.arange(data.shape[0]) - data.shape[0] // 2, data[:, data.shape[1] // 2]
 
@@ -157,10 +43,71 @@ def get_x_cut(data):
 def get_y_cut(data):
     return np.arange(data.shape[1]) - data.shape[1] // 2, data[data.shape[0] // 2]
 
+def create_circle_mask(size):
+    X, Y = np.meshgrid(np.arange(size), np.arange(size))
+    X -= size // 2
+    Y -= size // 2
+    mask = (X ** 2 + Y ** 2) < (size // 2) ** 2 - 10
+    return mask
+
+def create_masked_sinogram(sino, mask, mode):
+    res = sino.copy()
+    if mode == 'constant':
+        res[mask==False] = 0
+    return res
+
+def fix_radon(sino, mask=None):
+    if mask is None:
+        radon_inv = sino.sum(axis=-1)
+    else:
+        radon_inv = (sino*mask).sum(axis=-1)/np.mean(mask.astype(np.float32), axis=-1)
+    fixed_sino = sino.T/radon_inv*np.mean(radon_inv)
+    return fixed_sino.T
+
+def recon_with_mask(sinogram: np.ndarray, angles:np.ndarray, mask:np.ndarray, niters=5, method=[['FBP_CUDA']]):
+    assert sinogram.shape == mask.shape
+    circ_mask = create_circle_mask(sinogram.shape[1])
+    t_sino = sinogram.copy()*mask
+    rec = np.zeros_like(circ_mask)
+    for _ in tqdm(range(niters)):
+        # t_sino = fix_radon(t_sino, mask)
+        rec = astra_recon_2d_parallel(t_sino, angles, method=method, data=rec)
+        # rec *= circ_mask
+        rec[rec<0] /= 2
+        t_sino = astra_fp_2d_parallel(rec, angles)
+        t_sino[mask] = sinogram[mask]
+    return rec, t_sino,
+
+mask = np.ones_like(sinogram, dtype=np.bool)
+begin_stripe = mask.shape[1]//4+13
+mask[:, begin_stripe:begin_stripe+5] = False
+sino = create_masked_sinogram(sinogram, mask, 'constant')
+
+mask_recon, res_sino = recon_with_mask(sino, angles, mask,
+                                       niters=1000, method = [['SIRT_CUDA', 5]])
+
+plt.figure(figsize=(15, 10))
+plt.subplot(231)
+plt.imshow(data, cmap=plt.cm.gray)
+plt.subplot(232)
+plt.imshow(sino, cmap=plt.cm.gray)
+plt.colorbar(orientation='horizontal')
+plt.subplot(233)
+plt.imshow(res_sino, cmap=plt.cm.gray)
+plt.colorbar(orientation='horizontal')
+
+plt.subplot(234)
+plt.imshow(mask_recon, cmap=plt.cm.gray)
+plt.subplot(235)
+plt.imshow(data-mask_recon, cmap=plt.cm.viridis)
+plt.subplot(236)
+plt.imshow(mask, cmap=plt.cm.gray)
+plt.show()
+
 
 # %%
 
-for s_pad in tqdm_notebook(np.arange(1, 62, 4)):
+for s_pad in tqdm(np.arange(1, 62, 4)):
     sinogram_cut = sinogram[:, s_pad:-s_pad]
     plt.figure(figsize=(10, 10))
     plt.imshow(sinogram_cut, cmap=plt.cm.gray, interpolation='nearest')
@@ -168,7 +115,7 @@ for s_pad in tqdm_notebook(np.arange(1, 62, 4)):
     plt.title('Cut= {}'.format(s_pad))
     plt.show()
 
-    rec_cut, proj_geom, cfg = astra_tomo2d(sinogram_cut, angles)
+    rec_cut, proj_geom, cfg = astra_recon_2d_parallel(sinogram_cut, angles)
 
     plt.figure(figsize=(10, 10))
     plt.imshow(rec_cut, interpolation='nearest', cmap=plt.cm.gray)
@@ -180,7 +127,7 @@ for s_pad in tqdm_notebook(np.arange(1, 62, 4)):
 
     sinogram_padded = np.zeros((sinogram_cut.shape[0], sinogram_cut.shape[1] + padsize * 2), dtype='float32')
     sinogram_padded[:, padsize:-padsize] = sinogram_cut
-    rec_pad0, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
+    rec_pad0, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
 
     plt.figure(figsize=(10, 10))
     plt.imshow(sinogram_padded, cmap=plt.cm.gray, interpolation='nearest')
@@ -193,8 +140,8 @@ for s_pad in tqdm_notebook(np.arange(1, 62, 4)):
     plt.title('Cut= {}'.format(s_pad))
     plt.show()
 
-    rec_pad, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
-    sino = astra_build_sinogram(rec_pad, angles)
+    rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
+    sino = astra_fp_2d_parallel(rec_pad, angles)
     sino[:, padsize:-padsize] = sinogram_cut
 
     max_radon = sino.sum(axis=1).max()
@@ -207,11 +154,11 @@ for s_pad in tqdm_notebook(np.arange(1, 62, 4)):
 
     mask = (X ** 2 + Y ** 2) < (rec.shape[0] // 2) ** 2 - 10
 
-    for i in tqdm_notebook(range(10000)):
-        rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+    for i in tqdm(range(10000)):
+        rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
         rec_pad *= rec_pad > 0
         rec_pad *= mask
-        sino = astra_build_sinogram(rec_pad, angles)
+        sino = astra_fp_2d_parallel(rec_pad, angles)
         k = sino[:, padsize:-padsize].mean(axis=-1) / sinogram_cut.mean(axis=-1)
         if np.sum(np.argwhere(k == 0)) > 0:
             break
@@ -223,7 +170,7 @@ for s_pad in tqdm_notebook(np.arange(1, 62, 4)):
         sino = (sino.T / sino.sum(axis=1) * sino.sum(axis=1).mean()).T
         sino[:, padsize:-padsize] = sinogram_cut
 
-    rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+    rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
 
     plt.figure(figsize=(10, 10))
     plt.imshow(sino, cmap=plt.cm.gray, interpolation='nearest')
@@ -284,7 +231,7 @@ for s_pad in tqdm_notebook(np.arange(1, 62, 4)):
 
 # %%
 
-for s_pad in tqdm_notebook(np.arange(32, 33, 1)):
+for s_pad in tqdm(np.arange(32, 33, 1)):
     sinogram_cut = sinogram[:, s_pad:-s_pad]
     plt.figure(figsize=(10, 10))
     plt.imshow(sinogram_cut, cmap=plt.cm.gray, interpolation='nearest')
@@ -292,7 +239,7 @@ for s_pad in tqdm_notebook(np.arange(32, 33, 1)):
     plt.title('Cut= {}'.format(s_pad))
     plt.show()
 
-    rec_cut, proj_geom, cfg = astra_tomo2d(sinogram_cut, angles)
+    rec_cut, proj_geom, cfg = astra_recon_2d_parallel(sinogram_cut, angles)
 
     plt.figure(figsize=(10, 10))
     plt.imshow(rec_cut, interpolation='nearest', cmap=plt.cm.gray)
@@ -304,7 +251,7 @@ for s_pad in tqdm_notebook(np.arange(32, 33, 1)):
 
     sinogram_padded = np.zeros((sinogram_cut.shape[0], sinogram_cut.shape[1] + padsize * 2), dtype='float32')
     sinogram_padded[:, padsize:-padsize] = sinogram_cut
-    rec_pad0, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
+    rec_pad0, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
 
     plt.figure(figsize=(10, 10))
     plt.imshow(sinogram_padded, cmap=plt.cm.gray, interpolation='nearest')
@@ -317,8 +264,8 @@ for s_pad in tqdm_notebook(np.arange(32, 33, 1)):
     plt.title('Cut= {}'.format(s_pad))
     plt.show()
 
-    rec_pad, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
-    sino = astra_build_sinogram(rec_pad, angles)
+    rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
+    sino = astra_fp_2d_parallel(rec_pad, angles)
     sino[:, padsize:-padsize] = sinogram_cut
 
     max_radon = sino.sum(axis=1).max()
@@ -331,11 +278,11 @@ for s_pad in tqdm_notebook(np.arange(32, 33, 1)):
 
     mask = (X ** 2 + Y ** 2) < (rec.shape[0] // 2) ** 2 - 10
 
-    for i in tqdm_notebook(range(10001)):
-        rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+    for i in tqdm(range(10001)):
+        rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
         rec_pad *= rec_pad > 0
         rec_pad *= mask
-        sino = astra_build_sinogram(rec_pad, angles)
+        sino = astra_fp_2d_parallel(rec_pad, angles)
         k = sino[:, padsize:-padsize].mean(axis=-1) / sinogram_cut.mean(axis=-1)
         if np.sum(np.argwhere(k == 0)) > 0:
             break
@@ -347,7 +294,7 @@ for s_pad in tqdm_notebook(np.arange(32, 33, 1)):
         sino = (sino.T / sino.sum(axis=1) * sino.sum(axis=1).mean()).T
         sino[:, padsize:-padsize] = sinogram_cut
         if i in [1, 5, 10, 100, 500, 1000, 5000, 10000]:
-            rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+            rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
 
             plt.figure(figsize=(20, 15))
             plt.subplot(221)
@@ -408,10 +355,9 @@ for s_pad in tqdm_notebook(np.arange(32, 33, 1)):
             #             plt.hlines([s_pad,128-s_pad],s_pad,128-s_pad, 'r', lw=2)
             plt.hlines([64], 0, 128, 'g', lw=2)
             plt.show()
-
 # %%
 
-for s_pad in log_progress(np.arange(32, 33, 1)):
+for s_pad in tqdm(np.arange(32, 33, 1)):
     sinogram_cut = sinogram[:, s_pad:-s_pad]
     plt.figure(figsize=(10, 10))
     plt.imshow(sinogram_cut, cmap=plt.cm.gray, interpolation='nearest')
@@ -419,7 +365,7 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
     plt.title('Cut= {}'.format(s_pad))
     plt.show()
 
-    rec_cut, proj_geom, cfg = astra_tomo2d(sinogram_cut, angles)
+    rec_cut, proj_geom, cfg = astra_recon_2d_parallel(sinogram_cut, angles)
 
     plt.figure(figsize=(10, 10))
     plt.imshow(rec_cut, interpolation='nearest', cmap=plt.cm.gray)
@@ -431,7 +377,7 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
 
     sinogram_padded = np.zeros((sinogram_cut.shape[0], sinogram_cut.shape[1] + padsize * 2), dtype='float32')
     sinogram_padded[:, padsize:-padsize] = sinogram_cut
-    rec_pad0, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
+    rec_pad0, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
 
     plt.figure(figsize=(10, 10))
     plt.imshow(sinogram_padded, cmap=plt.cm.gray, interpolation='nearest')
@@ -444,8 +390,8 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
     plt.title('Cut= {}'.format(s_pad))
     plt.show()
 
-    rec_pad, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
-    sino = astra_build_sinogram(rec_pad, angles)
+    rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
+    sino = astra_fp_2d_parallel(rec_pad, angles)
     sino[:, padsize:-padsize] = sinogram_cut
 
     max_radon = sino.sum(axis=1).max()
@@ -458,11 +404,11 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
 
     mask = (X ** 2 + Y ** 2) < (rec.shape[0] // 2) ** 2 - 10
 
-    for i in log_progress(range(100)):
-        rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+    for i in tqdm(range(100)):
+        rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
         rec_pad *= rec_pad > 0
         #         rec_pad*=mask
-        sino = astra_build_sinogram(rec_pad, angles)
+        sino = astra_fp_2d_parallel(rec_pad, angles)
         k = sino[:, padsize:-padsize].mean(axis=-1) / sinogram_cut.mean(axis=-1)
         if np.sum(np.argwhere(k == 0)) > 0:
             break
@@ -474,7 +420,7 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
         sino = (sino.T / sino.sum(axis=1) * sino.sum(axis=1).mean()).T
         sino[:, padsize:-padsize] = sinogram_cut
         if i in [1, 5, 10, 100, 500, 1000, 5000, 10000]:
-            rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+            rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
 
             plt.figure(figsize=(20, 15))
             plt.subplot(221)
@@ -536,9 +482,7 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
             plt.hlines([64], 0, 128, 'g', lw=2)
             plt.show()
 
-# %%
-
-for s_pad in log_progress(np.arange(32, 33, 1)):
+for s_pad in tqdm(np.arange(32, 33, 1)):
     sinogram_cut = sinogram[:, s_pad:-s_pad]
     plt.figure(figsize=(10, 10))
     plt.imshow(sinogram_cut, cmap=plt.cm.gray, interpolation='nearest')
@@ -546,7 +490,7 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
     plt.title('Cut= {}'.format(s_pad))
     plt.show()
 
-    rec_cut, proj_geom, cfg = astra_tomo2d(sinogram_cut, angles)
+    rec_cut, proj_geom, cfg = astra_recon_2d_parallel(sinogram_cut, angles)
 
     plt.figure(figsize=(10, 10))
     plt.imshow(rec_cut, interpolation='nearest', cmap=plt.cm.gray)
@@ -558,7 +502,7 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
 
     sinogram_padded = np.zeros((sinogram_cut.shape[0], sinogram_cut.shape[1] + padsize * 2), dtype='float32')
     sinogram_padded[:, padsize:-padsize] = sinogram_cut
-    rec_pad0, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
+    rec_pad0, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
 
     plt.figure(figsize=(10, 10))
     plt.imshow(sinogram_padded, cmap=plt.cm.gray, interpolation='nearest')
@@ -571,8 +515,8 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
     plt.title('Cut= {}'.format(s_pad))
     plt.show()
 
-    rec_pad, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
-    sino = astra_build_sinogram(rec_pad, angles)
+    rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
+    sino = astra_fp_2d_parallel(rec_pad, angles)
     sino[:, padsize:-padsize] = sinogram_cut
 
     max_radon = sino.sum(axis=1).max()
@@ -585,11 +529,11 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
 
     mask = (X ** 2 + Y ** 2) < (rec.shape[0] // 2) ** 2 - 10
 
-    for i in log_progress(range(10001)):
-        rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+    for i in tqdm(range(10001)):
+        rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
         rec_pad *= rec_pad > 0
         rec_pad *= mask
-        sino = astra_build_sinogram(rec_pad, angles)
+        sino = astra_fp_2d_parallel(rec_pad, angles)
         k = sino[:, padsize:-padsize].mean(axis=-1) / sinogram_cut.mean(axis=-1)
         if np.sum(np.argwhere(k == 0)) > 0:
             break
@@ -601,7 +545,7 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
         #         sino = (sino.T/sino.sum(axis=1)*sino.sum(axis=1).mean()).T
         sino[:, padsize:-padsize] = sinogram_cut
         if i in [10000, ]:
-            rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+            rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
 
             plt.figure(figsize=(20, 15))
             plt.subplot(221)
@@ -664,14 +608,13 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
             plt.show()
 
 # %%
-
 # plt.figure(figsize=(10,10))
 # plt.imshow(sinogram_cut, cmap=plt.cm.gray, interpolation='nearest')
 # plt.colorbar(orientation='horizontal')
 # plt.axis('tight')
 # plt.show()
 
-# rec_cut, proj_geom, cfg = astra_tomo2d(sinogram_cut, angles)
+# rec_cut, proj_geom, cfg = astra_recon_2d_parallel(sinogram_cut, angles)
 
 # plt.figure(figsize=(10,10))
 # # plt.imshow(rec,vmin=0.1, vmax=0.2)
@@ -680,15 +623,13 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
 # plt.show()
 
 # %%
-
 # padsize = s_pad*2*2
 
 # sinogram_padded = np.zeros((sinogram_cut.shape[0],sinogram_cut.shape[1]+padsize*2), dtype='float32')
 # sinogram_padded[:,padsize:-padsize] = sinogram_cut
-# rec_pad0, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
+# rec_pad0, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
 
 # %%
-
 # plt.figure(figsize=(10,10))
 # plt.imshow(sinogram_padded, cmap=plt.cm.gray, interpolation='nearest')
 # plt.colorbar(orientation='horizontal')
@@ -702,7 +643,6 @@ for s_pad in log_progress(np.arange(32, 33, 1)):
 # plt.show()
 
 # %%
-
 import scipy.ndimage
 
 
@@ -727,10 +667,8 @@ def my_rc(sino0, level):
 
 
 # %%
-
-
-# rec_pad, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
-# sino = astra_build_sinogram(rec_pad, angles)
+# rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
+# sino = astra_fp_2d_parallel(rec_pad, angles)
 # sino[:,padsize:-padsize] = sinogram_cut
 
 # max_radon=sino.sum(axis=1).max()
@@ -743,27 +681,27 @@ def my_rc(sino0, level):
 
 # mask = (X**2+Y**2)<(rec.shape[0]//2)**2-10
 
-# # for i in log_progress(range(1000)):
-# #     rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+# # for i in tqdm(range(1000)):
+# #     rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
 
 # #     rec_pad*=rec_pad>0
 # #     rec_pad*=mask
 # #     rec_pad[rec_pad>1] = 1
 # # #     if rec_pad.sum()>MU:
 # # #         rec_pad = rec_pad/rec_pad.sum()*MU
-# #     sino = astra_build_sinogram(rec_pad, angles)
+# #     sino = astra_fp_2d_parallel(rec_pad, angles)
 
 # #     if i < 150:
 # #         sino = my_rc(sino, 150-i)
 
 # #     sino[:,padsize:-padsize] = sinogram_cut
 
-# for i in log_progress(range(1000)):
-#     rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+# for i in tqdm(range(1000)):
+#     rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
 #     rec_pad*=rec_pad>0
 #     rec_pad*=mask
 # #     rec_pad[rec_pad>1] = 1
-#     sino = astra_build_sinogram(rec_pad, angles)
+#     sino = astra_fp_2d_parallel(rec_pad, angles)
 
 # #     sino = (sino.T/sino.sum(axis=1)*sinogram_cut.mean()).T
 # #   t = sino[:,pad_size:-shift-pad_size]
@@ -772,7 +710,7 @@ def my_rc(sino0, level):
 #     sino = (sino.T/sino.sum(axis=1)*max_radon*1.4).T
 #     sino[:,padsize:-padsize] = sinogram_cut
 
-# rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+# rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
 
 # plt.figure(figsize=(10,10))
 # plt.imshow(sino, cmap=plt.cm.gray, interpolation='nearest')
@@ -831,8 +769,7 @@ def my_rc(sino0, level):
 
 
 # %%
-
-rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
 
 plt.figure(figsize=(10, 10))
 plt.imshow(sino[:, padsize - s_pad:-padsize + s_pad], cmap=plt.cm.gray, interpolation='nearest')
@@ -876,7 +813,6 @@ plt.colorbar(orientation='horizontal')
 plt.show()
 
 # %%
-
 import matplotlib
 
 matplotlib.rcParams.update({'font.size': 22})
@@ -917,18 +853,12 @@ plt.colorbar(orientation='vertical')
 plt.show()
 
 # %%
-
 x = np.zeros((128 * 3 // 2, 180))
 for t in range(180):
     x[int(64 * 3 // 2 + 64 * np.sin((t + 30) / 180. * np.pi)), t:t + 2] = 1
 
 plt.figure(figsize=(10, 10))
 plt.imshow(x, cmap=plt.cm.gray)
-
-# %%
-
-import h5py
-
 # %%
 
 data_file = '/home/makov/diskmnt/big/robotom/8381fee8-a5cb-41d5-b6e5-4f5617458b46/tomo_rec.h5'
@@ -937,34 +867,22 @@ data_file = '/home/makov/diskmnt/big/robotom/8381fee8-a5cb-41d5-b6e5-4f5617458b4
 
 with h5py.File(data_file) as h5f:
     data = h5f['Reconstruction'][1200]
-
 # %%
 
 data[data < 0] = 0
-
-# %%
 
 plt.figure(figsize=(10, 10))
 plt.imshow(data, cmap=plt.cm.gray)
 # plt.colorbar()
 
-# %%
-
 angles = np.arange(0, 180, 1. / 10) * np.pi / 180 + 0.3
-sinogram = astra_build_sinogram(data, angles)
-
-# %%
+sinogram = astra_fp_2d_parallel(data, angles)
 
 plt.figure(figsize=(10, 10))
 plt.imshow(sinogram, cmap=plt.cm.gray)
 # plt.colorbar()
 
 # %%
-
-from cv2 import medianBlur
-
-# %%
-
 padsize = 300
 s_pad = padsize
 
@@ -975,7 +893,7 @@ plt.axis('tight')
 plt.title('Cut= {}'.format(s_pad))
 plt.show()
 
-rec_cut, proj_geom, cfg = astra_tomo2d(sinogram_cut, angles)
+rec_cut, proj_geom, cfg = astra_recon_2d_parallel(sinogram_cut, angles)
 
 plt.figure(figsize=(10, 10))
 plt.imshow(rec_cut, interpolation='nearest', cmap=plt.cm.gray)
@@ -987,7 +905,7 @@ plt.show()
 
 sinogram_padded = np.zeros((sinogram_cut.shape[0], sinogram_cut.shape[1] + padsize * 2), dtype='float32')
 sinogram_padded[:, padsize:-padsize] = sinogram_cut
-rec_pad0, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
+rec_pad0, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
 
 plt.figure(figsize=(10, 10))
 plt.imshow(sinogram_padded, cmap=plt.cm.gray, interpolation='nearest')
@@ -1001,8 +919,8 @@ plt.imshow(rec_pad0, interpolation='nearest', cmap=plt.cm.gray, vmin=0, vmax=1)
 plt.title('Cut= {}'.format(s_pad))
 plt.show()
 
-rec_pad, proj_geom, cfg = astra_tomo2d(sinogram_padded, angles)
-sino = astra_build_sinogram(rec_pad, angles)
+rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sinogram_padded, angles)
+sino = astra_fp_2d_parallel(rec_pad, angles)
 sino[:, padsize:-padsize] = sinogram_cut
 
 # # max_radon=sino.sum(axis=1).max()
@@ -1015,11 +933,11 @@ Y -= rec_pad.shape[1] // 2
 
 mask = (X ** 2 + Y ** 2) < (rec_pad.shape[0] // 2 - 10) ** 2  # Fix it in the up !
 
-for i in log_progress(range(5000)):
-    rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+for i in tqdm(range(5000)):
+    rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
     rec_pad *= rec_pad > 0
     rec_pad *= mask
-    sino = astra_build_sinogram(rec_pad, angles)
+    sino = astra_fp_2d_parallel(rec_pad, angles)
     k = sino[:, padsize:-padsize].mean(axis=-1) / sinogram_cut.mean(axis=-1)
     if np.sum(np.argwhere(k == 0)) > 0:
         break
@@ -1033,7 +951,7 @@ for i in log_progress(range(5000)):
     #     sino[sino>200]=200
     sino[:, padsize:-padsize] = sinogram_cut
 
-rec_pad, proj_geom, cfg = astra_tomo2d(sino, angles)
+rec_pad, proj_geom, cfg = astra_recon_2d_parallel(sino, angles)
 
 plt.figure(figsize=(10, 10))
 plt.imshow(sino, cmap=plt.cm.gray, interpolation='nearest')
@@ -1047,7 +965,6 @@ plt.imshow(rec_pad, interpolation='nearest', cmap=plt.cm.gray, vmin=0, vmax=1)
 plt.title('Cut= {}'.format(s_pad))
 # plt.colorbar()
 plt.show()
-
 # %%
 
 

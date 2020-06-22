@@ -17,3 +17,6 @@ dependencies:
   - pip
   - bokeh
   - matplotlib
+  - tqdm
+  - h5py
+  - py-opencv
