@@ -37,14 +37,6 @@ plt.show()
 
 
 # %%
-def get_x_cut(data):
-    return np.arange(data.shape[0]) - data.shape[0] // 2, data[:, data.shape[1] // 2]
-
-
-def get_y_cut(data):
-    return np.arange(data.shape[1]) - data.shape[1] // 2, data[data.shape[0] // 2]
-
-
 def create_circle_mask(size):
     X, Y = np.meshgrid(np.arange(size), np.arange(size))
     X -= size // 2
@@ -73,7 +65,7 @@ def interpolate_sino(image, mask):
     x, y = np.meshgrid(np.arange(image.shape[1]), np.arange(image.shape[0]))
     data = image.copy()
     my_interp_func = interp.NearestNDInterpolator((x[mask], y[mask]), data[mask])
-    z = my_interp_func(x,y)
+    z = my_interp_func(x, y)
     return z
 
 
@@ -85,27 +77,31 @@ def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray, 
     assert sinogram.shape == mask.shape
     circ_mask = create_circle_mask(sinogram.shape[1])
     t_sino = sinogram.copy() * mask
-    t_sino = interpolate_sino(t_sino, mask)
+    # t_sino = interpolate_sino(t_sino, mask)
     rec = np.zeros_like(circ_mask)
     for i in tqdm(range(niters)):
         # t_sino = fix_radon(t_sino, mask)
-        rec = astra_recon_2d_parallel(t_sino, angles, method=method, data=rec)
-        # rec *= circ_mask
-        # rec[rec < 0] /= 2
-        t_sino = astra_fp_2d_parallel(rec, angles)
-        t_sino[mask] = sinogram[mask]
-        # t_sino[np.invert(mask)] *= np.random.normal(
-        #     1.0, ((niters-i)/niters)*1e-2, np.sum(np.invert(mask)))
+        for j in range(i+1):
+            rec = astra_recon_2d_parallel(t_sino, angles, method=method, data=None)
+            # rec *= circ_mask
+            # rec[rec < 0] /= 2
+            t_sino = astra_fp_2d_parallel(rec, angles)
+            t_sino[mask] = sinogram[mask]
+            # t_sino[np.invert(mask)] *= np.random.normal(
+            #     1.0, ((niters-i)/niters)*1e-2, np.sum(np.invert(mask)))
     return rec, t_sino
 
 
 mask = np.ones_like(origin_sinogram, dtype=np.bool)
 begin_stripe = mask.shape[1] // 4 + 13
-mask[:mask.shape[0]//2, begin_stripe:begin_stripe + 10] = False
+# mask[:mask.shape[0] // 2, begin_stripe:begin_stripe + 10] = False
+mask[:, begin_stripe:begin_stripe + 10] = False
 sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
 mask_recon, res_sino = recon_with_mask(sino, angles, mask,
-                                       niters=10000,
-                                       method=[['SIRT_CUDA', 3]])
+                                       niters=30,
+                                       method=[['SART_CUDA', 50],
+                                               ['SIRT_CUDA', 100],
+                                               ])
 
 # plt.figure(figsize=(15, 10))
 # plt.subplot(231)
@@ -129,9 +125,9 @@ mask_recon, res_sino = recon_with_mask(sino, angles, mask,
 plt.figure(figsize=(15, 10))
 
 plt.subplot(121)
-plt.imshow(res_sino[:, 50:200], vmin=20, vmax=40,
-           cmap=plt.cm.gray)
+plt.imshow(res_sino, cmap=plt.cm.gray)
+plt.axis('tight')
 plt.subplot(122)
-plt.imshow(mask_recon[100:-100, 100:-100], vmin=0.1, vmax=0.4,
+plt.imshow(mask_recon[50:-50, 50:-50], vmin=0, vmax=1,
            cmap=plt.cm.gray)
 plt.show()
