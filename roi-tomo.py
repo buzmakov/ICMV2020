@@ -45,33 +45,18 @@ def interpolate_sino(image, mask):
     return z
 
 
-def show_sino_rec(sino, recon, ideal_rec):
-    plt.figure(figsize=(15, 10))
-    plt.subplot(131)
-    plt.imshow(sino, cmap=plt.cm.gray)
-    plt.axis('tight')
-    plt.subplot(132)
-    plt.imshow(recon[50:-50, 50:-50], vmin=0, vmax=1,
-               cmap=plt.cm.gray)
-
-    plt.subplot(133)
-    plt.imshow(ideal_rec[50:-50, 50:-50], vmin=0, vmax=1,
-               cmap=plt.cm.gray)
-    plt.show()
-
-
 # default_method = [['SART_CUDA', 50],
 #                   ['SIRT_CUDA', 100]]
 
 
 default_method = [['FBP_CUDA']]
 
+
 def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
-                    niters=1000,
+                    niters=300,
                     method=default_method,
                     interpolation=False):
     assert sinogram.shape == mask.shape
-    ideal_recon = astra_recon_2d_parallel(sinogram, angles, method=method, data=None)
 
     circle_mask = create_circle_mask(sinogram.shape[1], )
     t_sino = sinogram.copy() * mask
@@ -83,10 +68,8 @@ def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
         rec = astra_recon_2d_parallel(t_sino, angles, method=method, data=None)
         rec *= circle_mask
         t_sino = astra_fp_2d_parallel(rec, angles)
-        t_sino = t_sino / np.sum(t_sino[mask]) * k0
+        t_sino = t_sino / np.sum(t_sino[mask]) * k0  # FBP normalization fix
         t_sino[mask] = sinogram[mask]
-        if i % 10 == 0:
-            show_sino_rec(t_sino, rec, ideal_recon)
     return rec, t_sino
 
 
@@ -98,84 +81,95 @@ def generate_sinogram(data_size, angles):
     return origin_sinogram, angles, data
 
 
-def test_case_1():
-    origin_sinogram, angles, data = generate_sinogram(128, np.arange(0, 180, 0.1))
+def do_test(sinogram, data, angles, mask, nitres=300):
+    rec = astra_recon_2d_parallel(sinogram, angles)
 
-    rec = astra_recon_2d_parallel(origin_sinogram, angles)
+    # plt.figure(figsize=(12, 12))
+    # plt.subplot(221)
+    # plt.imshow(data, cmap=plt.cm.gray)
+    # plt.subplot(222)
+    # plt.imshow(sinogram, cmap=plt.cm.gray)
+    # plt.axis('tight')
+    # plt.subplot(223)
+    # plt.imshow(rec, cmap=plt.cm.gray)
+    # plt.subplot(224)
+    # plt.imshow(data - rec, cmap=plt.cm.seismic)
+    # plt.show()
 
-    plt.figure(figsize=(12, 12))
-    plt.subplot(221)
-    plt.imshow(data, cmap=plt.cm.gray)
-    plt.subplot(222)
-    plt.imshow(origin_sinogram, cmap=plt.cm.gray)
+    recon_my, res_sino = recon_with_mask(sinogram, angles, mask)
+    rec_mask = astra_recon_2d_parallel(sinogram * mask, angles)
+
+    plt.figure(figsize=(15, 10))
+
+    plt.subplot(231)
+    plt.imshow(sinogram * mask, cmap=plt.cm.gray)
     plt.axis('tight')
-    plt.subplot(223)
-    plt.imshow(rec, cmap=plt.cm.gray)
-    plt.subplot(224)
-    plt.imshow(data - rec, cmap=plt.cm.seismic)
+    plt.title('Masked sinogram')
+
+    plt.subplot(234)
+    plt.imshow(res_sino, cmap=plt.cm.gray)
+    plt.axis('tight')
+    plt.title('Reconstructed sinogram')
+
+    plt.subplot(232)
+    plt.imshow(data[50:-50, 50:-50], vmin=0, vmax=1,
+               cmap=plt.cm.gray)
+    plt.title('Original phantom')
+
+    plt.subplot(233)
+    plt.imshow(rec[50:-50, 50:-50], vmin=0, vmax=1,
+               cmap=plt.cm.gray)
+    plt.title('Ideal reconstruction')
+
+    plt.subplot(235)
+    plt.imshow(rec_mask[50:-50, 50:-50], vmin=0, vmax=1,
+               cmap=plt.cm.gray)
+    plt.title('Mask recon')
+
+    plt.subplot(236)
+    plt.imshow(recon_my[50:-50, 50:-50], vmin=0, vmax=1,
+               cmap=plt.cm.gray)
+    plt.title('My recon')
+
     plt.show()
+
+
+def test_case_1():
+    angles = np.arange(0, 180, 0.1)
+    data_size = 128
+    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
 
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
     begin_stripe = mask.shape[1] // 4 + 13
     mask[:, begin_stripe:begin_stripe + 10] = False
-    # sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
-    sino = origin_sinogram.copy()
-    mask_recon, res_sino = recon_with_mask(sino, angles, mask)
 
-    # show_sino_rec(res_sino, mask_recon)
+    do_test(origin_sinogram, data, angles, mask)
 
 
 def test_case_2():
-    origin_sinogram, angles, data = generate_sinogram(128, np.arange(0, 180, 0.5))
-
-    rec = astra_recon_2d_parallel(origin_sinogram, angles)
-
-    plt.figure(figsize=(12, 12))
-    plt.subplot(221)
-    plt.imshow(data, cmap=plt.cm.gray)
-    plt.subplot(222)
-    plt.imshow(origin_sinogram, cmap=plt.cm.gray)
-    plt.axis('tight')
-    plt.subplot(223)
-    plt.imshow(rec, cmap=plt.cm.gray)
-    plt.subplot(224)
-    plt.imshow(data - rec, cmap=plt.cm.seismic)
-    plt.show()
+    angles = np.arange(0, 180, 0.1)
+    data_size = 128
+    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
 
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
     begin_stripe = mask.shape[1] // 4 + 13
     mask[:mask.shape[0] // 2, begin_stripe:begin_stripe + 10] = False
-    # sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
-    sino = origin_sinogram.copy()
-    mask_recon, res_sino = recon_with_mask(sino, angles, mask)
 
-    # show_sino_rec(res_sino, mask_recon)
+    do_test(origin_sinogram, data, angles, mask)
 
 
 def test_case_3():
-    origin_sinogram, angles, data = generate_sinogram(128, np.arange(0, 360, 0.1))
+    angles = np.arange(0, 360, 0.1)
+    data_size = 128
 
-    rec = astra_recon_2d_parallel(origin_sinogram, angles)
-
-    plt.figure(figsize=(12, 12))
-    plt.subplot(221)
-    plt.imshow(data, cmap=plt.cm.gray)
-    plt.subplot(222)
-    plt.imshow(origin_sinogram, cmap=plt.cm.gray)
-    plt.axis('tight')
-    plt.subplot(223)
-    plt.imshow(rec, cmap=plt.cm.gray)
-    plt.subplot(224)
-    plt.imshow(data - rec, cmap=plt.cm.seismic)
-    plt.show()
+    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
 
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
     mask[:, :mask.shape[1] // 2 - 10] = False
-    # sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
-    sino = origin_sinogram.copy()
-    mask_recon, res_sino = recon_with_mask(sino, angles, mask)
 
-    # show_sino_rec(res_sino, mask_recon)
+    do_test(origin_sinogram, data, angles, mask)
 
 
+test_case_1()
+test_case_2()
 test_case_3()
