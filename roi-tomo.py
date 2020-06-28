@@ -7,10 +7,10 @@ import pylab as plt
 from scipy import interpolate as interp
 from tomopy.misc.phantom import shepp2d
 from tqdm import tqdm
-
 from tomo.recon.astra_utils import astra_recon_2d_parallel, astra_fp_2d_parallel
 
 matplotlib.rcParams.update({'font.size': 16})
+
 
 # %%
 def create_circle_mask(size):
@@ -45,32 +45,48 @@ def interpolate_sino(image, mask):
     return z
 
 
-def show_sino_rec(sino, recon):
+def show_sino_rec(sino, recon, ideal_rec):
     plt.figure(figsize=(15, 10))
-    plt.subplot(121)
+    plt.subplot(131)
     plt.imshow(sino, cmap=plt.cm.gray)
     plt.axis('tight')
-    plt.subplot(122)
+    plt.subplot(132)
     plt.imshow(recon[50:-50, 50:-50], vmin=0, vmax=1,
+               cmap=plt.cm.gray)
+
+    plt.subplot(133)
+    plt.imshow(ideal_rec[50:-50, 50:-50], vmin=0, vmax=1,
                cmap=plt.cm.gray)
     plt.show()
 
-default_method = [['SART_CUDA', 50],
-                 ['SIRT_CUDA', 100]]
+
+# default_method = [['SART_CUDA', 50],
+#                   ['SIRT_CUDA', 100]]
+
+
+default_method = [['FBP_CUDA']]
 
 def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
-                    niters = 100,
-                    method = default_method):
+                    niters=1000,
+                    method=default_method,
+                    interpolation=False):
     assert sinogram.shape == mask.shape
+    ideal_recon = astra_recon_2d_parallel(sinogram, angles, method=method, data=None)
+
+    circle_mask = create_circle_mask(sinogram.shape[1], )
     t_sino = sinogram.copy() * mask
+    if interpolation:
+        t_sino = interpolate_sino(t_sino, mask)
     rec = np.zeros((sinogram.shape[1], sinogram.shape[1]), dtype='float32')
+    k0 = np.sum(t_sino[mask])
     for i in tqdm(range(niters)):
         rec = astra_recon_2d_parallel(t_sino, angles, method=method, data=None)
+        rec *= circle_mask
         t_sino = astra_fp_2d_parallel(rec, angles)
+        t_sino = t_sino / np.sum(t_sino[mask]) * k0
         t_sino[mask] = sinogram[mask]
         if i % 10 == 0:
-            show_sino_rec(t_sino, rec)
-            # print(kk)
+            show_sino_rec(t_sino, rec, ideal_recon)
     return rec, t_sino
 
 
@@ -83,7 +99,7 @@ def generate_sinogram(data_size, angles):
 
 
 def test_case_1():
-    origin_sinogram, angles, data = generate_sinogram(128, np.arange(0, 180, 1))
+    origin_sinogram, angles, data = generate_sinogram(128, np.arange(0, 180, 0.1))
 
     rec = astra_recon_2d_parallel(origin_sinogram, angles)
 
@@ -102,17 +118,15 @@ def test_case_1():
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
     begin_stripe = mask.shape[1] // 4 + 13
     mask[:, begin_stripe:begin_stripe + 10] = False
-    sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
-
+    # sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
+    sino = origin_sinogram.copy()
     mask_recon, res_sino = recon_with_mask(sino, angles, mask)
 
-
-
-    show_sino_rec(res_sino, mask_recon)
+    # show_sino_rec(res_sino, mask_recon)
 
 
 def test_case_2():
-    origin_sinogram, angles, data = generate_sinogram(128, np.arange(0, 180, 1))
+    origin_sinogram, angles, data = generate_sinogram(128, np.arange(0, 180, 0.5))
 
     rec = astra_recon_2d_parallel(origin_sinogram, angles)
 
@@ -131,15 +145,15 @@ def test_case_2():
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
     begin_stripe = mask.shape[1] // 4 + 13
     mask[:mask.shape[0] // 2, begin_stripe:begin_stripe + 10] = False
-    sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
-
+    # sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
+    sino = origin_sinogram.copy()
     mask_recon, res_sino = recon_with_mask(sino, angles, mask)
 
-    show_sino_rec(res_sino, mask_recon)
+    # show_sino_rec(res_sino, mask_recon)
 
 
 def test_case_3():
-    origin_sinogram, angles, data = generate_sinogram(128, np.arange(0, 360, 1))
+    origin_sinogram, angles, data = generate_sinogram(128, np.arange(0, 360, 0.1))
 
     rec = astra_recon_2d_parallel(origin_sinogram, angles)
 
@@ -156,12 +170,12 @@ def test_case_3():
     plt.show()
 
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
-    begin_stripe = mask.shape[1] // 4 + 13
-    mask[:, :mask.shape[1] //2 - 10] = False
-    sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
-
+    mask[:, :mask.shape[1] // 2 - 10] = False
+    # sino = create_masked_sinogram(origin_sinogram, mask, 'constant')
+    sino = origin_sinogram.copy()
     mask_recon, res_sino = recon_with_mask(sino, angles, mask)
 
-    show_sino_rec(res_sino, mask_recon)
+    # show_sino_rec(res_sino, mask_recon)
+
 
 test_case_3()
