@@ -18,7 +18,7 @@ def create_circle_mask(size):
     X -= size // 2
     Y -= size // 2
     mask = (X ** 2 + Y ** 2) < (size // 2 - 5) ** 2
-    return mask
+    return mask.astype('float32')
 
 
 def create_masked_sinogram(sino, mask, mode):
@@ -44,18 +44,11 @@ def interpolate_sino(image, mask):
     z = my_interp_func(x, y)
     return z
 
-
-# default_method = [['SART_CUDA', 50],
-#                   ['SIRT_CUDA', 100]]
-
-
-default_method = [['FBP_CUDA']]
-
-
 def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
                     niters=300,
-                    method=default_method,
-                    interpolation=False):
+                    method= [['FBP_CUDA']],
+                    interpolation=False,
+                    monitoring_iteration = False):
     assert sinogram.shape == mask.shape
 
     circle_mask = create_circle_mask(sinogram.shape[1], )
@@ -70,6 +63,15 @@ def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
         t_sino = astra_fp_2d_parallel(rec, angles)
         t_sino = t_sino / np.sum(t_sino[mask]) * k0  # FBP normalization fix
         t_sino[mask] = sinogram[mask]
+        if monitoring_iteration and (i % monitoring_iteration==0):
+            plt.figure(figsize=(12,10))
+            plt.subplot(121)
+            plt.imshow(t_sino, cmap=plt.cm.gray)
+            plt.axis('tight')
+            plt.subplot(122)
+            plt.imshow(rec, vmin=0, vmax=1, cmap=plt.cm.gray)
+            plt.title(i)
+            plt.show()
     return rec, t_sino
 
 
@@ -81,7 +83,7 @@ def generate_sinogram(data_size, angles):
     return origin_sinogram, angles, data
 
 
-def do_test(sinogram, data, angles, mask, nitres=300):
+def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=False):
     rec = astra_recon_2d_parallel(sinogram, angles)
 
     # plt.figure(figsize=(12, 12))
@@ -96,7 +98,9 @@ def do_test(sinogram, data, angles, mask, nitres=300):
     # plt.imshow(data - rec, cmap=plt.cm.seismic)
     # plt.show()
 
-    recon_my, res_sino = recon_with_mask(sinogram, angles, mask)
+    recon_my, res_sino = recon_with_mask(sinogram, angles, mask,
+                                         niters=nitres,
+                                         monitoring_iteration=monitoring_iteration)
     rec_mask = astra_recon_2d_parallel(sinogram * mask, angles)
 
     plt.figure(figsize=(15, 10))
@@ -112,22 +116,22 @@ def do_test(sinogram, data, angles, mask, nitres=300):
     plt.title('Reconstructed sinogram')
 
     plt.subplot(232)
-    plt.imshow(data[50:-50, 50:-50], vmin=0, vmax=1,
+    plt.imshow(data, vmin=0, vmax=1,
                cmap=plt.cm.gray)
     plt.title('Original phantom')
 
     plt.subplot(233)
-    plt.imshow(rec[50:-50, 50:-50], vmin=0, vmax=1,
+    plt.imshow(rec, vmin=0, vmax=1,
                cmap=plt.cm.gray)
     plt.title('Ideal reconstruction')
 
     plt.subplot(235)
-    plt.imshow(rec_mask[50:-50, 50:-50], vmin=0, vmax=1,
+    plt.imshow(rec_mask, vmin=0, vmax=1,
                cmap=plt.cm.gray)
     plt.title('Mask recon')
 
     plt.subplot(236)
-    plt.imshow(recon_my[50:-50, 50:-50], vmin=0, vmax=1,
+    plt.imshow(recon_my, vmin=0, vmax=1,
                cmap=plt.cm.gray)
     plt.title('My recon')
 
@@ -170,6 +174,28 @@ def test_case_3():
     do_test(origin_sinogram, data, angles, mask)
 
 
-test_case_1()
-test_case_2()
-test_case_3()
+def test_case_4():
+    angles = np.arange(0, 180, 0.1)
+    data_size = 128
+
+    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
+
+    mask = np.zeros_like(origin_sinogram, dtype=np.bool)
+    mask[:, mask.shape[1] // 2 + 40 : mask.shape[1] // 2 - 40] = True
+    do_test(origin_sinogram, data, angles, mask, nitres=10)
+
+def test_case_5():
+    angles = np.arange(0, 180, 0.1)
+    data_size = 128
+
+    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
+
+    mask = np.zeros_like(origin_sinogram, dtype=np.bool)
+    mask[ : int(mask.shape[0] * 0.9), :] = True
+    do_test(origin_sinogram, data, angles, mask, nitres=5000, monitoring_iteration=100)
+
+
+# test_case_1()
+# test_case_2()
+# test_case_3()
+test_case_5()
