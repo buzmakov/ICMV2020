@@ -44,11 +44,21 @@ def interpolate_sino(image, mask):
     z = my_interp_func(x, y)
     return z
 
+def monitor_recon(i, rec, t_sino):
+    plt.figure(figsize=(12, 10))
+    plt.subplot(121)
+    plt.imshow(t_sino, cmap=plt.cm.gray)
+    plt.axis('tight')
+    plt.subplot(122)
+    plt.imshow(rec, vmin=0, vmax=1, cmap=plt.cm.gray)
+    plt.title(i)
+    plt.show()
+
 def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
                     niters=300,
                     method= [['FBP_CUDA']],
                     interpolation=False,
-                    monitoring_iteration = False):
+                    monitoring_iteration=None):
     assert sinogram.shape == mask.shape
 
     circle_mask = create_circle_mask(sinogram.shape[1], )
@@ -63,15 +73,8 @@ def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
         t_sino = astra_fp_2d_parallel(rec, angles)
         t_sino = t_sino / np.sum(t_sino[mask]) * k0  # FBP normalization fix
         t_sino[mask] = sinogram[mask]
-        if monitoring_iteration and (i % monitoring_iteration==0):
-            plt.figure(figsize=(12,10))
-            plt.subplot(121)
-            plt.imshow(t_sino, cmap=plt.cm.gray)
-            plt.axis('tight')
-            plt.subplot(122)
-            plt.imshow(rec, vmin=0, vmax=1, cmap=plt.cm.gray)
-            plt.title(i)
-            plt.show()
+        if (monitoring_iteration is not None) and (i % monitoring_iteration == 0):
+            monitor_recon(i, rec, t_sino)
     return rec, t_sino
 
 
@@ -83,7 +86,7 @@ def generate_sinogram(data_size, angles):
     return origin_sinogram, angles, data
 
 
-def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=False):
+def do_test(sinogram, data, angles, mask, nitres=500, monitoring_iteration=None):
     rec = astra_recon_2d_parallel(sinogram, angles)
 
     # plt.figure(figsize=(12, 12))
@@ -101,12 +104,16 @@ def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=False
     recon_my, res_sino = recon_with_mask(sinogram, angles, mask,
                                          niters=nitres,
                                          monitoring_iteration=monitoring_iteration)
-    rec_mask = astra_recon_2d_parallel(sinogram * mask, angles)
+
+    rec_corrupted = astra_recon_2d_parallel(sinogram * mask, angles)
+
+    rec_bad_reg = astra_recon_2d_parallel(1-mask, angles, method=[["BP_CUDA"]])
 
     plt.figure(figsize=(15, 10))
 
     plt.subplot(231)
-    plt.imshow(sinogram * mask, cmap=plt.cm.gray)
+    plt.imshow(sinogram , cmap=plt.cm.gray)
+    plt.imshow(np.ma.masked_where(mask == 1, mask), cmap=plt.cm.hsv, alpha=0.3)
     plt.axis('tight')
     plt.title('Masked sinogram')
 
@@ -116,9 +123,8 @@ def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=False
     plt.title('Reconstructed sinogram')
 
     plt.subplot(232)
-    plt.imshow(data, vmin=0, vmax=1,
-               cmap=plt.cm.gray)
-    plt.title('Original phantom')
+    plt.imshow(rec_bad_reg, cmap=plt.cm.gray)
+    plt.title('Untrusted region')
 
     plt.subplot(233)
     plt.imshow(rec, vmin=0, vmax=1,
@@ -126,8 +132,9 @@ def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=False
     plt.title('Ideal reconstruction')
 
     plt.subplot(235)
-    plt.imshow(rec_mask, vmin=0, vmax=1,
+    plt.imshow(rec_corrupted, vmin=0, vmax=1,
                cmap=plt.cm.gray)
+    # plt.imshow(np.ma.masked_where(rec_bad_reg == 0, rec_bad_reg), cmap=plt.cm.Reds, alpha=0.3)
     plt.title('Mask recon')
 
     plt.subplot(236)
@@ -138,8 +145,8 @@ def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=False
     plt.show()
 
 
-def test_case_1():
-    angles = np.arange(0, 180, 0.1)
+def test_case_1(): # column
+    angles = np.arange(0, 180, 0.2)
     data_size = 128
     origin_sinogram, angles, data = generate_sinogram(data_size, angles)
 
@@ -149,9 +156,20 @@ def test_case_1():
 
     do_test(origin_sinogram, data, angles, mask)
 
+def test_case_2(): # center
+    angles = np.arange(0, 180, 0.2)
+    data_size = 128
+    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
 
-def test_case_2():
-    angles = np.arange(0, 180, 0.1)
+    mask = np.ones_like(origin_sinogram, dtype=np.bool)
+    begin_stripe = mask.shape[1] // 2 -5
+    mask[:, begin_stripe:begin_stripe + 10] = False
+
+    do_test(origin_sinogram, data, angles, mask)
+
+
+def test_case_3(): # half of column
+    angles = np.arange(0, 180, 0.2)
     data_size = 128
     origin_sinogram, angles, data = generate_sinogram(data_size, angles)
 
@@ -162,8 +180,8 @@ def test_case_2():
     do_test(origin_sinogram, data, angles, mask)
 
 
-def test_case_3():
-    angles = np.arange(0, 360, 0.1)
+def test_case_4():  # alfa aquisition
+    angles = np.arange(0, 360, 0.2)
     data_size = 128
 
     origin_sinogram, angles, data = generate_sinogram(data_size, angles)
@@ -174,28 +192,38 @@ def test_case_3():
     do_test(origin_sinogram, data, angles, mask)
 
 
-def test_case_4():
-    angles = np.arange(0, 180, 0.1)
-    data_size = 128
-
-    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
-
-    mask = np.zeros_like(origin_sinogram, dtype=np.bool)
-    mask[:, mask.shape[1] // 2 + 40 : mask.shape[1] // 2 - 40] = True
-    do_test(origin_sinogram, data, angles, mask, nitres=10)
-
 def test_case_5():
-    angles = np.arange(0, 180, 0.1)
+    angles = np.arange(0, 180, 0.2)
     data_size = 128
 
     origin_sinogram, angles, data = generate_sinogram(data_size, angles)
 
     mask = np.zeros_like(origin_sinogram, dtype=np.bool)
-    mask[ : int(mask.shape[0] * 0.9), :] = True
-    do_test(origin_sinogram, data, angles, mask, nitres=5000, monitoring_iteration=100)
+    mask[:, mask.shape[1] // 2 - 40 : mask.shape[1] // 2 + 40] = True
+    do_test(origin_sinogram, data, angles, mask, nitres=1000)
+
+# def test_case_6():
+#     angles = np.arange(0, 180, 0.1)
+#     data_size = 256
+#     ang_step = 30
+#
+#     origin_sinogram, angles, data = generate_sinogram(data_size, angles)
+#     ideal_recon = astra_recon_2d_parallel(origin_sinogram[::ang_step], angles[::ang_step])
+#     plt.figure(figsize=(7,7))
+#     plt.imshow(ideal_recon, vmin=0, vmax=1, cmap=plt.cm.gray)
+#     plt.show()
+#
+#     mask = np.zeros_like(origin_sinogram, dtype=np.bool)
+#     num_angles = len(angles)
+#
+#     for i in range(ang_step):
+#         mask[i*num_angles//ang_step: i*num_angles//ang_step+1, :] = True
+#
+#     do_test(origin_sinogram, data, angles, mask, nitres=1000, monitoring_iteration=100)
 
 
-# test_case_1()
-# test_case_2()
-# test_case_3()
+test_case_1()
+test_case_2()
+test_case_3()
+test_case_4()
 test_case_5()
