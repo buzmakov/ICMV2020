@@ -7,6 +7,7 @@ import pylab as plt
 from scipy import interpolate as interp
 from tomopy.misc.phantom import shepp2d
 from tqdm import tqdm
+
 from tomo.recon.astra_utils import astra_recon_2d_parallel, astra_fp_2d_parallel
 
 matplotlib.rcParams.update({'font.size': 16})
@@ -65,17 +66,22 @@ def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
     t_sino = sinogram.copy() * mask
     if interpolation:
         t_sino = interpolate_sino(t_sino, mask)
+    rec_ref = astra_recon_2d_parallel(sinogram, angles, method=method, data=None)
     rec = np.zeros((sinogram.shape[1], sinogram.shape[1]), dtype='float32')
     k0 = np.sum(t_sino[mask])
+    rec_err = []
+    sino_err = []
     for i in tqdm(range(niters)):
+        t_sino[mask] = sinogram[mask]
         rec = astra_recon_2d_parallel(t_sino, angles, method=method, data=None)
         rec *= circle_mask
         t_sino = astra_fp_2d_parallel(rec, angles)
         t_sino = t_sino / np.sum(t_sino[mask]) * k0  # FBP normalization fix
-        t_sino[mask] = sinogram[mask]
+        rec_err.append(np.sqrt(np.mean((rec_ref - rec) ** 2)) / np.mean(rec_ref))
+        sino_err.append(np.sqrt(np.mean((t_sino - sinogram) ** 2)) / np.mean(sinogram))
         if (monitoring_iteration is not None) and (i % monitoring_iteration == 0):
             monitor_recon(i, rec, t_sino)
-    return rec, t_sino
+    return rec, t_sino, rec_err, sino_err
 
 
 def generate_sinogram(data_size, angles):
@@ -86,7 +92,7 @@ def generate_sinogram(data_size, angles):
     return origin_sinogram, angles, data
 
 
-def do_test(sinogram, data, angles, mask, nitres=500, monitoring_iteration=None):
+def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=None):
     rec = astra_recon_2d_parallel(sinogram, angles)
 
     # plt.figure(figsize=(12, 12))
@@ -101,46 +107,92 @@ def do_test(sinogram, data, angles, mask, nitres=500, monitoring_iteration=None)
     # plt.imshow(data - rec, cmap=plt.cm.seismic)
     # plt.show()
 
-    recon_my, res_sino = recon_with_mask(sinogram, angles, mask,
-                                         niters=nitres,
-                                         monitoring_iteration=monitoring_iteration)
+    recon_my, res_sino, rec_err, sino_err = recon_with_mask(sinogram, angles, mask,
+                                                            niters=nitres,
+                                                            monitoring_iteration=monitoring_iteration)
 
     rec_corrupted = astra_recon_2d_parallel(sinogram * mask, angles)
 
-    rec_bad_reg = astra_recon_2d_parallel(1-mask, angles, method=[["BP_CUDA"]])
+    rec_bad_reg = astra_recon_2d_parallel(1 - mask, angles, method=[["BP_CUDA"]])
+    rec_good_reg = astra_recon_2d_parallel(mask, angles, method=[["BP_CUDA"]])
 
-    plt.figure(figsize=(15, 10))
+    cut_l, cut_r = rec.shape[0] // 5, 4 * rec.shape[0] // 5
+    # mask = mask[cut_l:cut_r, cut_l:cut_r]
+    rec_bad_reg = rec_bad_reg[cut_l:cut_r, cut_l:cut_r]
+    rec_good_reg = rec_good_reg[cut_l:cut_r, cut_l:cut_r]
+    rec = rec[cut_l:cut_r, cut_l:cut_r]
+    rec_corrupted = rec_corrupted[cut_l:cut_r, cut_l:cut_r]
+    recon_my = recon_my[cut_l:cut_r, cut_l:cut_r]
 
-    plt.subplot(231)
-    plt.imshow(sinogram , cmap=plt.cm.gray)
-    plt.imshow(np.ma.masked_where(mask == 1, mask), cmap=plt.cm.hsv, alpha=0.3)
+    plt.figure(figsize=(15, 15))
+
+    plt.subplot(331)
+    plt.imshow(sinogram, cmap=plt.cm.gray)
+    plt.colorbar(orientation='horizontal')
+    plt.imshow(np.ma.masked_where(mask == 1, mask), cmap=plt.cm.jet, alpha=0.3)
     plt.axis('tight')
-    plt.title('Masked sinogram')
+    plt.title('Sinogram with untrusted region')
 
-    plt.subplot(234)
+    plt.subplot(334)
     plt.imshow(res_sino, cmap=plt.cm.gray)
     plt.axis('tight')
-    plt.title('Reconstructed sinogram')
+    plt.colorbar(orientation='horizontal')
+    plt.title('Sinogram after iterations')
 
-    plt.subplot(232)
-    plt.imshow(rec_bad_reg, cmap=plt.cm.gray)
-    plt.title('Untrusted region')
+    plt.subplot(337)
+    t = res_sino - sinogram
+    plt.imshow(t, vmin=-np.max(np.abs(t)), vmax=np.max(np.abs(t)), cmap=plt.cm.seismic)
+    plt.axis('tight')
+    plt.colorbar(orientation='horizontal')
+    plt.title('Sinogram difference')
 
-    plt.subplot(233)
-    plt.imshow(rec, vmin=0, vmax=1,
-               cmap=plt.cm.gray)
-    plt.title('Ideal reconstruction')
+    plt.subplot(332)
+    t = rec_good_reg - rec_bad_reg
+    imrange = np.max(np.abs(t))
+    plt.imshow(t, vmin=-imrange, vmax=imrange, cmap=plt.cm.seismic)
+    cbar = plt.colorbar(orientation='horizontal', ticks=[-imrange // 2, imrange // 2])
+    cbar.ax.set_xticklabels(['Untrusted', 'Trusted'])
+    plt.title('Reconstruction reliability')
 
-    plt.subplot(235)
-    plt.imshow(rec_corrupted, vmin=0, vmax=1,
-               cmap=plt.cm.gray)
-    # plt.imshow(np.ma.masked_where(rec_bad_reg == 0, rec_bad_reg), cmap=plt.cm.Reds, alpha=0.3)
-    plt.title('Mask recon')
-
-    plt.subplot(236)
+    plt.subplot(333)
     plt.imshow(recon_my, vmin=0, vmax=1,
                cmap=plt.cm.gray)
-    plt.title('My recon')
+    plt.colorbar(orientation='horizontal')
+    plt.title('Iterative reconstruction')
+
+    plt.subplot(335)
+    plt.imshow(rec_corrupted, vmin=0, vmax=1,
+               cmap=plt.cm.gray)
+    plt.colorbar(orientation='horizontal')
+    plt.title('Original FBP reconstruction')
+
+    plt.subplot(336)
+    plt.imshow(recon_my, vmin=0, vmax=1,
+               cmap=plt.cm.gray)
+    # plt.colorbar(orientation='horizontal')
+
+    t = rec_good_reg - rec_bad_reg
+    imrange = np.max(np.abs(t))
+    plt.imshow(t, vmin=-imrange, vmax=imrange, cmap=plt.cm.seismic, alpha=0.3)
+
+    cbar = plt.colorbar(orientation='horizontal', ticks=[-imrange // 2, imrange // 2], alpha=0.3)
+    cbar.ax.set_xticklabels(['Untrusted', 'Trusted'])
+
+    plt.title('Iterative reconstruction')
+
+    plt.subplot(338)
+    t = recon_my - rec
+    plt.imshow(t, vmin=-np.max(np.abs(t)), vmax=np.max(np.abs(t)),
+               cmap=plt.cm.seismic)
+    plt.colorbar(orientation='horizontal')
+    plt.title('Rec diff')
+
+    plt.subplot(339)
+    plt.semilogy(rec_err, label='Rec L2 err')
+    plt.semilogy(sino_err, label='Sino L2 err')
+    plt.grid()
+    plt.legend()
+    plt.title('L2 error')
 
     plt.show()
 
