@@ -9,7 +9,7 @@ from scipy import interpolate as interp
 from tomopy.misc.phantom import shepp2d
 from tqdm import tqdm
 
-from tomo.recon.astra_utils import astra_recon_2d_parallel, astra_fp_2d_parallel
+from astra_utils import astra_recon_2d_parallel, astra_fp_2d_parallel
 
 matplotlib.rcParams.update({'font.size': 16})
 
