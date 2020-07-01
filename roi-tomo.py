@@ -4,6 +4,7 @@
 import matplotlib
 import numpy as np
 import pylab as plt
+from matplotlib.colors import ListedColormap
 from scipy import interpolate as interp
 from tomopy.misc.phantom import shepp2d
 from tqdm import tqdm
@@ -92,6 +93,26 @@ def generate_sinogram(data_size, angles):
     return origin_sinogram, angles, data
 
 
+def build_cm():
+    def rgba_to_intensity(r, g, b, a):
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    N = 256
+    vals = np.ones((N, 4))
+    vals[:, 0] = np.linspace(1., 1., N)
+    vals[:, 1] = np.linspace(0., 1., N)
+    vals[:, 2] = np.linspace(0., 1., N)
+
+    intensity = rgba_to_intensity(vals[:, 0], vals[:, 1], vals[:, 2], vals[:, 3])
+
+    for ii in range(vals.shape[0]):
+        vals[ii, 0:-1] /= intensity[ii] * intensity.max()
+
+    vals[:, 0:-1] /= np.max(vals[:, 0:-1])
+    newcmp = ListedColormap(vals)
+    return newcmp
+
+
 def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=None):
     rec = astra_recon_2d_parallel(sinogram, angles)
 
@@ -124,12 +145,13 @@ def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=None)
     rec_corrupted = rec_corrupted[cut_l:cut_r, cut_l:cut_r]
     recon_my = recon_my[cut_l:cut_r, cut_l:cut_r]
 
+    my_cmap = build_cm()
     plt.figure(figsize=(15, 15))
 
     plt.subplot(331)
     plt.imshow(sinogram, cmap=plt.cm.gray)
     plt.colorbar(orientation='horizontal')
-    plt.imshow(np.ma.masked_where(mask == 1, mask), cmap=plt.cm.jet, alpha=0.3)
+    plt.imshow(np.ma.masked_where(mask == 1, mask), cmap=plt.cm.hsv, alpha=0.5)
     plt.axis('tight')
     plt.title('Sinogram with untrusted region')
 
@@ -148,9 +170,13 @@ def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=None)
 
     plt.subplot(332)
     t = rec_good_reg - rec_bad_reg
-    imrange = np.max(np.abs(t))
-    plt.imshow(t, vmin=-imrange, vmax=imrange, cmap=plt.cm.seismic)
-    cbar = plt.colorbar(orientation='horizontal', ticks=[-imrange // 2, imrange // 2])
+    imrange_0 = np.min(t)
+    imrange_1 = np.max(t)
+    plt.imshow(t,
+               # vmin=-imrange, vmax=imrange,
+               cmap=my_cmap)
+    cbar = plt.colorbar(orientation='horizontal', ticks=[
+        imrange_0 + (imrange_1 - imrange_0) // 4, imrange_0 + (imrange_1 - imrange_0) * 3 // 4])
     cbar.ax.set_xticklabels(['Untrusted', 'Trusted'])
     plt.title('Reconstruction reliability')
 
@@ -172,10 +198,14 @@ def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=None)
     # plt.colorbar(orientation='horizontal')
 
     t = rec_good_reg - rec_bad_reg
-    imrange = np.max(np.abs(t))
-    plt.imshow(t, vmin=-imrange, vmax=imrange, cmap=plt.cm.seismic, alpha=0.3)
+    imrange_0 = np.min(t)
+    imrange_1 = np.max(t)
+    plt.imshow(t,
+               # vmin=-imrange, vmax=imrange,
+               cmap=my_cmap, alpha=0.5)
 
-    cbar = plt.colorbar(orientation='horizontal', ticks=[-imrange // 2, imrange // 2], alpha=0.3)
+    cbar = plt.colorbar(orientation='horizontal', ticks=[
+        imrange_0 + (imrange_1 - imrange_0) // 4, imrange_0 + (imrange_1 - imrange_0) * 3 // 4])
     cbar.ax.set_xticklabels(['Untrusted', 'Trusted'])
 
     plt.title('Iterative reconstruction')
