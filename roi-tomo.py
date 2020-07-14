@@ -46,6 +46,7 @@ def interpolate_sino(image, mask):
     z = my_interp_func(x, y)
     return z
 
+
 def monitor_recon(i, rec, t_sino):
     plt.figure(figsize=(12, 10))
     plt.subplot(121)
@@ -56,17 +57,20 @@ def monitor_recon(i, rec, t_sino):
     plt.title(i)
     plt.show()
 
+
 def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
                     niters=300,
-                    method= [['FBP_CUDA']],
+                    method=[['FBP_CUDA']],
                     interpolation=False,
                     monitoring_iteration=None):
     assert sinogram.shape == mask.shape
 
     circle_mask = create_circle_mask(sinogram.shape[1], )
     t_sino = sinogram.copy() * mask
+
     if interpolation:
         t_sino = interpolate_sino(t_sino, mask)
+
     rec_ref = astra_recon_2d_parallel(sinogram, angles, method=method, data=None)
     rec = np.zeros((sinogram.shape[1], sinogram.shape[1]), dtype='float32')
     k0 = np.sum(t_sino[mask])
@@ -75,9 +79,10 @@ def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
     for i in tqdm(range(niters)):
         t_sino[mask] = sinogram[mask]
         rec = astra_recon_2d_parallel(t_sino, angles, method=method, data=None)
-        rec *= circle_mask
+        rec *= circle_mask  # Fix FBP implementation
         t_sino = astra_fp_2d_parallel(rec, angles)
         t_sino = t_sino / np.sum(t_sino[mask]) * k0  # FBP normalization fix
+        # monitoring of convergence
         rec_err.append(np.sqrt(np.mean((rec_ref - rec) ** 2)) / np.mean(rec_ref))
         sino_err.append(np.sqrt(np.mean((t_sino - sinogram) ** 2)) / np.mean(sinogram))
         if (monitoring_iteration is not None) and (i % monitoring_iteration == 0):
@@ -85,7 +90,7 @@ def recon_with_mask(sinogram: np.ndarray, angles: np.ndarray, mask: np.ndarray,
     return rec, t_sino, rec_err, sino_err
 
 
-def generate_sinogram(data_size, angles):
+def generate_shepp_logan_sinogram(data_size, angles):
     data = np.squeeze(shepp2d(data_size)).astype('float32')
     data /= data.max()
     data = np.pad(data, data.shape[0] // 4, mode='constant')
@@ -94,7 +99,7 @@ def generate_sinogram(data_size, angles):
 
 
 def build_cm():
-    def rgba_to_intensity(r, g, b, a):
+    def rgba_to_intensity(r, g, b):
         return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
     N = 256
@@ -103,7 +108,7 @@ def build_cm():
     vals[:, 1] = np.linspace(0., 1., N)
     vals[:, 2] = np.linspace(0., 1., N)
 
-    intensity = rgba_to_intensity(vals[:, 0], vals[:, 1], vals[:, 2], vals[:, 3])
+    intensity = rgba_to_intensity(vals[:, 0], vals[:, 1], vals[:, 2])
 
     for ii in range(vals.shape[0]):
         vals[ii, 0:-1] /= intensity[ii] * intensity.max()
@@ -115,18 +120,6 @@ def build_cm():
 
 def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=None):
     rec = astra_recon_2d_parallel(sinogram, angles)
-
-    # plt.figure(figsize=(12, 12))
-    # plt.subplot(221)
-    # plt.imshow(data, cmap=plt.cm.gray)
-    # plt.subplot(222)
-    # plt.imshow(sinogram, cmap=plt.cm.gray)
-    # plt.axis('tight')
-    # plt.subplot(223)
-    # plt.imshow(rec, cmap=plt.cm.gray)
-    # plt.subplot(224)
-    # plt.imshow(data - rec, cmap=plt.cm.seismic)
-    # plt.show()
 
     recon_my, res_sino, rec_err, sino_err = recon_with_mask(sinogram, angles, mask,
                                                             niters=nitres,
@@ -144,6 +137,19 @@ def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=None)
     rec = rec[cut_l:cut_r, cut_l:cut_r]
     rec_corrupted = rec_corrupted[cut_l:cut_r, cut_l:cut_r]
     recon_my = recon_my[cut_l:cut_r, cut_l:cut_r]
+    data = data[cut_l:cut_r, cut_l:cut_r]
+
+    plt.figure(figsize=(12, 5))
+    plt.subplot(131)
+    plt.imshow(data, cmap=plt.cm.gray, vmin=0, vmax=1)
+    plt.subplot(132)
+    plt.imshow(sinogram, cmap=plt.cm.gray)
+    plt.axis('tight')
+    plt.subplot(133)
+    plt.imshow(rec, cmap=plt.cm.gray, vmin=0, vmax=1)
+    # plt.subplot(224)
+    # plt.imshow(data - rec, cmap=plt.cm.seismic)
+    plt.show()
 
     my_cmap = build_cm()
     plt.figure(figsize=(15, 15))
@@ -227,10 +233,10 @@ def do_test(sinogram, data, angles, mask, nitres=300, monitoring_iteration=None)
     plt.show()
 
 
-def test_case_1(): # column
+def test_case_1():  # column
     angles = np.arange(0, 180, 0.2)
     data_size = 128
-    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
+    origin_sinogram, angles, data = generate_shepp_logan_sinogram(data_size, angles)
 
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
     begin_stripe = mask.shape[1] // 4 + 13
@@ -238,22 +244,23 @@ def test_case_1(): # column
 
     do_test(origin_sinogram, data, angles, mask)
 
-def test_case_2(): # center
+
+def test_case_2():  # center
     angles = np.arange(0, 180, 0.2)
     data_size = 128
-    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
+    origin_sinogram, angles, data = generate_shepp_logan_sinogram(data_size, angles)
 
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
-    begin_stripe = mask.shape[1] // 2 -5
+    begin_stripe = mask.shape[1] // 2 - 5
     mask[:, begin_stripe:begin_stripe + 10] = False
 
     do_test(origin_sinogram, data, angles, mask)
 
 
-def test_case_3(): # half of column
+def test_case_3():  # half of column
     angles = np.arange(0, 180, 0.2)
     data_size = 128
-    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
+    origin_sinogram, angles, data = generate_shepp_logan_sinogram(data_size, angles)
 
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
     begin_stripe = mask.shape[1] // 4 + 13
@@ -266,7 +273,7 @@ def test_case_4():  # alfa aquisition
     angles = np.arange(0, 360, 0.2)
     data_size = 128
 
-    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
+    origin_sinogram, angles, data = generate_shepp_logan_sinogram(data_size, angles)
 
     mask = np.ones_like(origin_sinogram, dtype=np.bool)
     mask[:, :mask.shape[1] // 2 - 10] = False
@@ -274,22 +281,41 @@ def test_case_4():  # alfa aquisition
     do_test(origin_sinogram, data, angles, mask)
 
 
-def test_case_5():
+def test_case_5():  # out of field of view
     angles = np.arange(0, 180, 0.2)
     data_size = 128
 
-    origin_sinogram, angles, data = generate_sinogram(data_size, angles)
+    origin_sinogram, angles, data = generate_shepp_logan_sinogram(data_size, angles)
 
     mask = np.zeros_like(origin_sinogram, dtype=np.bool)
-    mask[:, mask.shape[1] // 2 - 40 : mask.shape[1] // 2 + 40] = True
+    mask[:, mask.shape[1] // 2 - 40: mask.shape[1] // 2 + 40] = True
     do_test(origin_sinogram, data, angles, mask, nitres=1000)
+
+
+def test_case_6():  # metal like
+    angles = np.arange(0, 180, 0.2)
+    data_size = 128
+
+    data = np.squeeze(shepp2d(data_size)).astype('float32')
+    data /= data.max()
+    data[55:60, 50:55] = 10
+    data = np.pad(data, data.shape[0] // 4, mode='constant')
+    origin_sinogram = astra_fp_2d_parallel(data, angles)
+
+    mask_t = np.asarray(data > 5).astype(np.float32)
+    mask = astra_fp_2d_parallel(mask_t, angles) > 0
+    mask = np.invert(mask)
+    # mask = np.ones_like(origin_sinogram, dtype=np.bool)
+    # mask[:, mask.shape[1] // 2 - 40 : mask.shape[1] // 2 + 40] = True
+    do_test(origin_sinogram, data, angles, mask)
+
 
 # def test_case_6():
 #     angles = np.arange(0, 180, 0.1)
 #     data_size = 256
 #     ang_step = 30
 #
-#     origin_sinogram, angles, data = generate_sinogram(data_size, angles)
+#     origin_sinogram, angles, data = generate_shepp_logan_sinogram(data_size, angles)
 #     ideal_recon = astra_recon_2d_parallel(origin_sinogram[::ang_step], angles[::ang_step])
 #     plt.figure(figsize=(7,7))
 #     plt.imshow(ideal_recon, vmin=0, vmax=1, cmap=plt.cm.gray)
@@ -304,8 +330,9 @@ def test_case_5():
 #     do_test(origin_sinogram, data, angles, mask, nitres=1000, monitoring_iteration=100)
 
 
-test_case_1()
-test_case_2()
-test_case_3()
-test_case_4()
-test_case_5()
+# test_case_1()
+# test_case_2()
+# test_case_3()
+# test_case_4()
+# test_case_5()
+test_case_6()
